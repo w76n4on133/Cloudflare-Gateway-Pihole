@@ -5,17 +5,24 @@ import time
 import random
 import http.client
 import socket
-import urllib.parse
 import zlib
 from io import BytesIO
 from functools import wraps
 from typing import Optional, Tuple
-from src import info, silent_error, error, RATE_LIMIT_INTERVAL, CF_IDENTIFIER, CF_API_TOKEN
+from src import info, silent_error, error, CF_IDENTIFIER, CF_API_TOKEN
+
 
 class HTTPException(Exception):
     pass
 
-def cloudflare_gateway_request(method: str, endpoint: str, body: Optional[str] = None, timeout: int = 10) -> Tuple[int, dict]:
+class RateLimitException(HTTPException):
+    pass
+
+def cloudflare_gateway_request(
+    method: str, endpoint: str,
+    body: Optional[str] = None,
+    timeout: int = 10
+) -> Tuple[int, dict]:
     context = ssl.create_default_context()
     conn = http.client.HTTPSConnection("api.cloudflare.com", context=context, timeout=timeout)
 
@@ -26,25 +33,36 @@ def cloudflare_gateway_request(method: str, endpoint: str, body: Optional[str] =
     }
 
     url = f"/client/v4/accounts/{CF_IDENTIFIER}/gateway{endpoint}"
-    full_url = f"https://api.cloudflare.com{url}"
-
+    
     try:
+        # Make the HTTPS request to the specified Cloudflare endpoint
         conn.request(method, url, body, headers)
         response = conn.getresponse()
         data = response.read()
         status = response.status
 
+        # Handle different content encoding types
         content_encoding = response.getheader('Content-Encoding')
-        if content_encoding == 'gzip':
+        if data is None or content_encoding in [None, 'identity']:
+            pass
+        elif content_encoding == 'gzip':
             buf = BytesIO(data)
             with gzip.GzipFile(fileobj=buf) as f:
                 data = f.read()
         elif content_encoding == 'deflate':
             data = zlib.decompress(data)
 
+        # Handle HTTP error status codes
         if status >= 400:
-            error_message = f"Request failed: {status} {response.reason}, Body: {data.decode('utf-8', errors='ignore')} for url: {full_url}"
-            if status in [400, 404]:
+            error_message = (
+                f"Request failed: {status} {response.reason}, "
+                f"Body: {data.decode('utf-8', errors='ignore')} "
+                f"for URL: https://api.cloudflare.com{url}"
+            )
+            if status == 429:
+                silent_error(error_message)
+                raise RateLimitException(error_message)
+            elif status in [400, 403, 404]:
                 error(error_message)
             else:
                 silent_error(error_message)
@@ -53,15 +71,21 @@ def cloudflare_gateway_request(method: str, endpoint: str, body: Optional[str] =
         return status, json.loads(data.decode('utf-8'))
 
     except (http.client.HTTPException, ssl.SSLError, socket.timeout, OSError) as e:
+        # Log and raise a generic HTTP exception for network-related errors
         error_message = f"Network error occurred: {e}"
-        info(error_message)
+        silent_error(error_message)
         raise HTTPException(error_message)
     except json.JSONDecodeError:
+        # Log and raise an exception if JSON decoding fails
         error_message = "Failed to decode JSON response"
-        info(error_message)
+        silent_error(error_message)
         raise HTTPException(error_message)
     finally:
         conn.close()
+
+# Retry conditions and strategies
+def stop_after_custom_attempts(attempt_number):
+    return attempt_number >= 5
 
 def stop_never(attempt_number):
     return False
@@ -86,7 +110,8 @@ def retry(stop=None, wait=None, retry=None, after=None, before_sleep=None):
                         raise
                     if after:
                         after({'attempt_number': attempt_number, 'outcome': e})
-                    if stop and stop(attempt_number):
+                    # Apply different stop conditions based on exception type
+                    if stop and stop(e, attempt_number):
                         raise
                     if before_sleep:
                         before_sleep({'attempt_number': attempt_number})
@@ -95,8 +120,15 @@ def retry(stop=None, wait=None, retry=None, after=None, before_sleep=None):
         return wrapper
     return decorator
 
+# Custom stop condition that handles RateLimitException and other exceptions separately
+def custom_stop_condition(exception, attempt_number):
+    if isinstance(exception, RateLimitException):
+        return False
+    return stop_after_custom_attempts(attempt_number)
+
+# Retry configuration:
 retry_config = {
-    'stop': stop_never,
+    'stop': custom_stop_condition,
     'wait': lambda attempt_number: wait_random_exponential(
         attempt_number, multiplier=1, max_wait=10
     ),
@@ -107,7 +139,7 @@ retry_config = {
 }
 
 class RateLimiter:
-    def __init__(self, interval):
+    def __init__(self, interval: float = 1):
         self.interval = interval
         self.timestamp = time.time()
 
@@ -119,11 +151,10 @@ class RateLimiter:
             time.sleep(sleep_time)
         self.timestamp = time.time()
 
-rate_limiter = RateLimiter(RATE_LIMIT_INTERVAL)
-
 def rate_limited_request(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
+        rate_limiter = RateLimiter()
         rate_limiter.wait_for_next_request()
         return func(*args, **kwargs)
     return wrapper
