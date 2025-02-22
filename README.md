@@ -2,6 +2,18 @@
 
 **[English](README.md)** | **[Việt Nam](docs/vi.md)**
 
+# New update 
+
+* If you receive an e-mail that says GitHub Action will be stop, don't worry, GitHub Action will continue to run forever. 
+
+* Major update, you can run cron every hour, no need to worry about losing blocking effect, no damage to Cloudflare Gateway server 
+
+* You must delete the lists of other scripts.
+
+* Don't worry about the number of listings on Cloudflare Gateway, for example there are 132k domains but the number of listings can be 140
+
+* To add a separate white list inviting visit [Cloudflare-Gateway-Allow](https://github.com/luxysiv/Cloudflare-Gateway-Allow)
+
 # Pihole styled, but using Cloudflare Gateway
 `For Devs, Ops, and everyone who hates Ads.`
 
@@ -61,38 +73,6 @@ Adguard = https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt
 `➞ https://github.com/<username>/<forked-repository>/settings/secrets/actions`
    1. Set **Cloudflare Account ID** to `CF_IDENTIFIER`.
    2. Set **API Token** to `CF_API_TOKEN`.
-
-### Schedule
----
-> Due to a limited 2-month commitment from GitHub Actions, you can create and paste this code to run on Cloudflare Workers. Notice, GitHub Tokens generate with no expiration and workflow permission.
-
-```javascript
-addEventListener('scheduled', event => {
-  event.waitUntil(handleScheduledEvent());
-});
-
-async function handleScheduledEvent() {
-  const GITHUB_TOKEN = 'YOUR_GITHUB_TOKEN_HERE';
-  try {
-    const dispatchResponse = await fetch('https://api.github.com/repos/YOUR_USER_NAME/YOUR_REPO_NAME/actions/workflows/main.yml/dispatches', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${GITHUB_TOKEN}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0',
-      },
-      body: JSON.stringify({
-        ref: 'main'
-      }),
-    });
-
-    if (!dispatchResponse.ok) throw new Error('Failed to dispatch workflow');
-  } catch (error) {
-    console.error('Error handling scheduled event:', error);
-  }
-}
-```
->> Remember to set up Cloudflare Workers triggers.
 
 ### How to set up using Termux?
 ---
